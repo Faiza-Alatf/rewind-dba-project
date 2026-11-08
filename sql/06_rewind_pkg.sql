@@ -7,6 +7,7 @@ CREATE OR REPLACE PACKAGE rewind_pkg AS
   FUNCTION  my_role RETURN VARCHAR2;
   PROCEDURE restore_value(p_audit_id NUMBER);            -- undo one UPDATE of one column
   PROCEDURE restore_deleted(p_change_group VARCHAR2);    -- bring back a deleted employee
+  PROCEDURE restore_inserted(p_change_group VARCHAR2);   -- undo an INSERT (deletes the row)
   PROCEDURE review_suspicious(p_sus_id NUMBER);          -- mark a suspicious entry as reviewed
   FUNCTION  activity_report(p_from DATE, p_to DATE) RETURN SYS_REFCURSOR;
 END rewind_pkg;
@@ -155,6 +156,55 @@ CREATE OR REPLACE PACKAGE BODY rewind_pkg AS
         RAISE;
     END;
   END restore_deleted;
+
+  -- ------------------------------------------------------------------
+  PROCEDURE restore_inserted(p_change_group VARCHAR2) IS
+    v_user  VARCHAR2(30) := SYS_CONTEXT('USERENV', 'SESSION_USER');
+    v_cnt   NUMBER;
+    v_first NUMBER;
+    v_emp   NUMBER;
+  BEGIN
+    IF NOT rewind_core.is_admin(v_user) THEN
+      log_failure(NULL, p_change_group, 'Access denied for ' || v_user);
+      RAISE_APPLICATION_ERROR(-20001, 'Access denied: only ADMIN users can restore data');
+    END IF;
+
+    SELECT COUNT(*), MIN(audit_id), MIN(record_id)
+      INTO v_cnt, v_first, v_emp
+      FROM audit_log
+     WHERE change_group = p_change_group
+       AND operation = 'INSERT' AND table_name = 'EMPLOYEES' AND is_restored = 'N';
+
+    IF v_cnt = 0 THEN
+      RAISE_APPLICATION_ERROR(-20009, 'No restorable inserted record found for this change group');
+    END IF;
+
+    SAVEPOINT before_restore;
+    BEGIN
+      rewind_core.g_restoring := TRUE;
+      DELETE FROM employees WHERE emp_id = v_emp;
+      IF SQL%ROWCOUNT = 0 THEN
+        RAISE_APPLICATION_ERROR(-20006, 'Employee ' || v_emp || ' no longer exists');
+      END IF;
+      rewind_core.g_restoring := FALSE;
+
+      UPDATE audit_log SET is_restored = 'Y'
+       WHERE change_group = p_change_group AND operation = 'INSERT';
+
+      INSERT INTO recovery_log(recovery_id, audit_id, change_group, restored_by,
+                               value_before_restore, restored_value, status, message)
+      VALUES (rec_seq.NEXTVAL, v_first, p_change_group, v_user,
+              'Employee ' || v_emp, NULL, 'SUCCESS',
+              'Undid INSERT of employee ' || v_emp);
+      COMMIT;
+    EXCEPTION
+      WHEN OTHERS THEN
+        rewind_core.g_restoring := FALSE;
+        ROLLBACK TO before_restore;
+        log_failure(v_first, p_change_group, SQLERRM);
+        RAISE;
+    END;
+  END restore_inserted;
 
   -- ------------------------------------------------------------------
   PROCEDURE review_suspicious(p_sus_id NUMBER) IS
