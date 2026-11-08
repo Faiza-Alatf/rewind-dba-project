@@ -22,6 +22,7 @@ END;
 
 PROMPT ===== TEST 3: ADMIN restores the old salary =====
 CONNECT rw_admin/"Admin#12345"@//localhost:1521/XEPDB1
+SET SERVEROUTPUT ON
 DECLARE
   v_id  NUMBER;
   v_sal NUMBER;
@@ -36,10 +37,12 @@ END;
 
 PROMPT ===== TEST 4: HR deletes an employee, ADMIN brings it back =====
 CONNECT rw_hr/"Hr#12345"@//localhost:1521/XEPDB1
+SET SERVEROUTPUT ON
 DELETE FROM rewind.employees WHERE emp_id = 115;
 COMMIT;
 
 CONNECT rw_admin/"Admin#12345"@//localhost:1521/XEPDB1
+SET SERVEROUTPUT ON
 DECLARE
   v_group VARCHAR2(32);
   v_name  VARCHAR2(80);
