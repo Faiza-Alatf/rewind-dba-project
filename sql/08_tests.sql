@@ -22,6 +22,7 @@ END;
 
 PROMPT ===== TEST 3: ADMIN restores the old salary =====
 CONNECT rw_admin/"Admin#12345"@//localhost:1521/XEPDB1
+SET SERVEROUTPUT ON
 DECLARE
   v_id  NUMBER;
   v_sal NUMBER;
@@ -36,10 +37,12 @@ END;
 
 PROMPT ===== TEST 4: HR deletes an employee, ADMIN brings it back =====
 CONNECT rw_hr/"Hr#12345"@//localhost:1521/XEPDB1
+SET SERVEROUTPUT ON
 DELETE FROM rewind.employees WHERE emp_id = 115;
 COMMIT;
 
 CONNECT rw_admin/"Admin#12345"@//localhost:1521/XEPDB1
+SET SERVEROUTPUT ON
 DECLARE
   v_group VARCHAR2(32);
   v_name  VARCHAR2(80);
@@ -71,3 +74,29 @@ PROMPT ===== TEST 7: full history of employee 101 =====
 SELECT audit_id, operation, column_name, old_value, new_value, changed_by,
        TO_CHAR(changed_on,'YYYY-MM-DD HH24:MI:SS') AS changed_on
   FROM rewind.v_change_history WHERE record_id = 101 ORDER BY audit_id;
+
+
+PROMPT ===== TEST 8: HR inserts a new employee, ADMIN undoes the INSERT =====
+CONNECT rw_hr/"Hr#12345"@//localhost:1521/XEPDB1
+SET SERVEROUTPUT ON
+SET VERIFY OFF
+-- Pick the next free employee ID so the test can be re-run safely
+COLUMN new_id NEW_VALUE v_new_id NOPRINT
+SELECT NVL(MAX(emp_id), 0) + 1 AS new_id FROM rewind.employees;
+INSERT INTO rewind.employees VALUES (&v_new_id, 'Test Person', 'Tester', 50000, 30, SYSDATE, 'ACTIVE');
+COMMIT;
+
+CONNECT rw_admin/"Admin#12345"@//localhost:1521/XEPDB1
+SET SERVEROUTPUT ON
+DECLARE
+  v_group VARCHAR2(32);
+  v_cnt   NUMBER;
+BEGIN
+  SELECT MAX(change_group) KEEP (DENSE_RANK LAST ORDER BY audit_id) INTO v_group
+    FROM rewind.audit_log
+   WHERE record_id = &v_new_id AND operation = 'INSERT' AND is_restored = 'N';
+  rewind.rewind_pkg.restore_inserted(v_group);
+  SELECT COUNT(*) INTO v_cnt FROM rewind.employees WHERE emp_id = &v_new_id;
+  DBMS_OUTPUT.PUT_LINE('Employee ' || &v_new_id || ' rows after undo = ' || v_cnt || '  (expected 0)');
+END;
+/
