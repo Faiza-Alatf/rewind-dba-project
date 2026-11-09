@@ -78,7 +78,12 @@ SELECT audit_id, operation, column_name, old_value, new_value, changed_by,
 
 PROMPT ===== TEST 8: HR inserts a new employee, ADMIN undoes the INSERT =====
 CONNECT rw_hr/"Hr#12345"@//localhost:1521/XEPDB1
-INSERT INTO rewind.employees VALUES (116, 'Test Person', 'Tester', 50000, 30, SYSDATE, 'ACTIVE');
+SET SERVEROUTPUT ON
+SET VERIFY OFF
+-- Pick the next free employee ID so the test can be re-run safely
+COLUMN new_id NEW_VALUE v_new_id NOPRINT
+SELECT NVL(MAX(emp_id), 0) + 1 AS new_id FROM rewind.employees;
+INSERT INTO rewind.employees VALUES (&v_new_id, 'Test Person', 'Tester', 50000, 30, SYSDATE, 'ACTIVE');
 COMMIT;
 
 CONNECT rw_admin/"Admin#12345"@//localhost:1521/XEPDB1
@@ -88,9 +93,10 @@ DECLARE
   v_cnt   NUMBER;
 BEGIN
   SELECT MAX(change_group) KEEP (DENSE_RANK LAST ORDER BY audit_id) INTO v_group
-    FROM rewind.audit_log WHERE record_id = 116 AND operation = 'INSERT' AND is_restored = 'N';
+    FROM rewind.audit_log
+   WHERE record_id = &v_new_id AND operation = 'INSERT' AND is_restored = 'N';
   rewind.rewind_pkg.restore_inserted(v_group);
-  SELECT COUNT(*) INTO v_cnt FROM rewind.employees WHERE emp_id = 116;
-  DBMS_OUTPUT.PUT_LINE('Employee 116 rows after undo = ' || v_cnt || '  (expected 0)');
+  SELECT COUNT(*) INTO v_cnt FROM rewind.employees WHERE emp_id = &v_new_id;
+  DBMS_OUTPUT.PUT_LINE('Employee ' || &v_new_id || ' rows after undo = ' || v_cnt || '  (expected 0)');
 END;
 /

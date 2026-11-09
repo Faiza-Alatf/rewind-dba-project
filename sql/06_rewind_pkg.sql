@@ -188,8 +188,11 @@ CREATE OR REPLACE PACKAGE BODY rewind_pkg AS
       END IF;
       rewind_core.g_restoring := FALSE;
 
-      UPDATE audit_log SET is_restored = 'Y'
-       WHERE change_group = p_change_group AND operation = 'INSERT';
+       UPDATE audit_log SET is_restored = 'Y'
+       WHERE change_group = p_change_group
+         AND operation    = 'INSERT'
+         AND table_name   = 'EMPLOYEES'
+         AND record_id    = v_emp;
 
       INSERT INTO recovery_log(recovery_id, audit_id, change_group, restored_by,
                                value_before_restore, restored_value, status, message)
