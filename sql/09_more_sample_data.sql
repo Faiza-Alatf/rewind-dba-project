@@ -112,7 +112,8 @@ INSERT INTO employees VALUES (300, 'Saad Raza', 'Store Keeper', 42000, 50, DATE 
 COMMIT;
 ALTER TRIGGER trg_employees_audit ENABLE;
 
--- Check:  expect 215 employees, 0 new audit rows
+-- Check:  expect 115 employees (15 existing + 100 new), 0 new audit rows
 -- SELECT COUNT(*) FROM employees;
 -- SELECT dept_id, COUNT(*) AS employees, ROUND(AVG(salary)) AS avg_salary FROM employees GROUP BY dept_id ORDER BY dept_id;
 -- SELECT status FROM user_triggers WHERE trigger_name = 'TRG_EMPLOYEES_AUDIT';   -- must be ENABLED
+
