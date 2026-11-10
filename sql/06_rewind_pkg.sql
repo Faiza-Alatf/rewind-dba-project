@@ -8,6 +8,7 @@ CREATE OR REPLACE PACKAGE rewind_pkg AS
   PROCEDURE restore_value(p_audit_id NUMBER);            -- undo one UPDATE of one column
   PROCEDURE restore_deleted(p_change_group VARCHAR2);    -- bring back a deleted employee
   PROCEDURE restore_inserted(p_change_group VARCHAR2);   -- undo an INSERT (deletes the row)
+  PROCEDURE restore_change_group(p_change_group VARCHAR2); -- restore a whole change group
   PROCEDURE review_suspicious(p_sus_id NUMBER);          -- mark a suspicious entry as reviewed
   FUNCTION  activity_report(p_from DATE, p_to DATE) RETURN SYS_REFCURSOR;
 END rewind_pkg;
@@ -208,6 +209,118 @@ CREATE OR REPLACE PACKAGE BODY rewind_pkg AS
         RAISE;
     END;
   END restore_inserted;
+
+  -- ------------------------------------------------------------------
+  -- Restores ONE whole change group as ONE logical transaction.
+  --   UPDATE group -> every not-yet-restored column gets its old value back
+  --   INSERT group -> delegates to restore_inserted
+  --   DELETE group -> delegates to restore_deleted
+  -- Any failure => ROLLBACK TO before_group + a FAILED row in recovery_log.
+  -- restore_value is NOT reused for UPDATE groups because it COMMITs after
+  -- every column, which could leave a half-restored group.
+  PROCEDURE restore_change_group(p_change_group VARCHAR2) IS
+    v_user    VARCHAR2(30) := SYS_CONTEXT('USERENV', 'SESSION_USER');
+    v_cnt     NUMBER;
+    v_op_min  VARCHAR2(10);
+    v_op_max  VARCHAR2(10);
+    v_first   NUMBER;            -- first audit_id of the group (for recovery_log)
+    v_rec_id  NUMBER;            -- employee id of the group
+    v_pending NUMBER;            -- UPDATE columns still to be restored
+    v_emp     employees%ROWTYPE;
+    v_err     VARCHAR2(500);
+  BEGIN
+    -- 1. authorization (same rule as the other restore procedures)
+    IF NOT rewind_core.is_admin(v_user) THEN
+      log_failure(NULL, p_change_group, 'Access denied for ' || v_user);
+      RAISE_APPLICATION_ERROR(-20001, 'Access denied: only ADMIN users can restore data');
+    END IF;
+
+    -- 2. which kind of change is this group?
+    SELECT COUNT(*), MIN(operation), MAX(operation), MIN(audit_id), MIN(record_id)
+      INTO v_cnt, v_op_min, v_op_max, v_first, v_rec_id
+      FROM audit_log
+     WHERE change_group = p_change_group
+       AND table_name   = 'EMPLOYEES';
+
+    -- 3. everything below is one logical transaction
+    SAVEPOINT before_group;
+    BEGIN
+      IF v_cnt = 0 THEN
+        RAISE_APPLICATION_ERROR(-20010, 'Change group not found: ' || p_change_group);
+      END IF;
+      IF v_op_min <> v_op_max THEN
+        RAISE_APPLICATION_ERROR(-20011, 'Change group contains mixed operations');
+      END IF;
+
+      CASE v_op_min
+        WHEN 'UPDATE' THEN
+          SELECT COUNT(*) INTO v_pending
+            FROM audit_log
+           WHERE change_group = p_change_group
+             AND operation = 'UPDATE' AND table_name = 'EMPLOYEES' AND is_restored = 'N';
+          IF v_pending = 0 THEN
+            RAISE_APPLICATION_ERROR(-20004, 'This change group was already restored');
+          END IF;
+
+          -- lock the current row, then put the old values into the record
+          BEGIN
+            SELECT * INTO v_emp FROM employees WHERE emp_id = v_rec_id FOR UPDATE;
+          EXCEPTION
+            WHEN NO_DATA_FOUND THEN
+              RAISE_APPLICATION_ERROR(-20006, 'Employee ' || v_rec_id || ' no longer exists');
+          END;
+
+          rewind_core.g_restoring := TRUE;   -- trigger logs these changes as RESTORE
+          FOR c IN (SELECT column_name, old_value
+                      FROM audit_log
+                     WHERE change_group = p_change_group
+                       AND operation = 'UPDATE' AND table_name = 'EMPLOYEES'
+                       AND is_restored = 'N'
+                     ORDER BY audit_id) LOOP
+            CASE c.column_name
+              WHEN 'EMP_NAME'  THEN v_emp.emp_name  := c.old_value;
+              WHEN 'JOB_TITLE' THEN v_emp.job_title := c.old_value;
+              WHEN 'SALARY'    THEN v_emp.salary    := rewind_core.str2num(c.old_value);
+              WHEN 'DEPT_ID'   THEN v_emp.dept_id   := TO_NUMBER(c.old_value);
+              WHEN 'HIRE_DATE' THEN v_emp.hire_date := TO_DATE(c.old_value, 'YYYY-MM-DD HH24:MI:SS');
+              WHEN 'STATUS'    THEN v_emp.status    := c.old_value;
+              ELSE RAISE_APPLICATION_ERROR(-20005, 'Column ' || c.column_name || ' cannot be restored');
+            END CASE;
+          END LOOP;
+
+          -- ONE update puts all columns back (unchanged columns are not logged)
+          UPDATE employees SET ROW = v_emp WHERE emp_id = v_rec_id;
+          rewind_core.g_restoring := FALSE;
+
+          UPDATE audit_log SET is_restored = 'Y'
+           WHERE change_group = p_change_group
+             AND operation = 'UPDATE' AND table_name = 'EMPLOYEES'
+             AND record_id = v_rec_id;
+
+          INSERT INTO recovery_log(recovery_id, audit_id, change_group, restored_by,
+                                   value_before_restore, restored_value, status, message)
+          VALUES (rec_seq.NEXTVAL, v_first, p_change_group, v_user,
+                  NULL, NULL, 'SUCCESS',
+                  'Restored ' || v_pending || ' column(s) of employee ' || v_rec_id
+                  || ' (change group)');
+          COMMIT;
+
+        -- these two log their own SUCCESS row and COMMIT themselves
+        WHEN 'INSERT' THEN restore_inserted(p_change_group);
+        WHEN 'DELETE' THEN restore_deleted(p_change_group);
+
+        ELSE
+          RAISE_APPLICATION_ERROR(-20011, 'Operation ' || v_op_min || ' cannot be restored');
+      END CASE;
+    EXCEPTION
+      WHEN OTHERS THEN
+        v_err := SUBSTR(SQLERRM, 1, 500);
+        rewind_core.g_restoring := FALSE;
+        ROLLBACK TO before_group;            -- nothing of this recovery stays
+        log_failure(v_first, p_change_group, 'restore_change_group: ' || v_err);
+        RAISE;
+    END;
+  END restore_change_group;
 
   -- ------------------------------------------------------------------
   PROCEDURE review_suspicious(p_sus_id NUMBER) IS
