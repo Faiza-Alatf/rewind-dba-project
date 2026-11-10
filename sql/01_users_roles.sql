@@ -27,7 +27,8 @@ GRANT CREATE SESSION TO rewind_admin_role, rewind_auditor_role, rewind_hr_role;
 CREATE USER rw_admin   IDENTIFIED BY "Admin#12345"   PROFILE rewind_profile;
 CREATE USER rw_auditor IDENTIFIED BY "Auditor#12345" PROFILE rewind_profile;
 CREATE USER rw_hr      IDENTIFIED BY "Hr#12345"      PROFILE rewind_profile;
-CREATE USER rw_guest   IDENTIFIED BY "Guest#12345"   PROFILE rewind_profile;  -- NOT registered in APP_USERS (demo of unauthorized changes)
+-- rw_guest is NOT registered in APP_USERS (demo of unauthorized changes)
+CREATE USER rw_guest   IDENTIFIED BY "Guest#12345"   PROFILE rewind_profile;
 
 GRANT rewind_admin_role   TO rw_admin;
 GRANT rewind_auditor_role TO rw_auditor;
