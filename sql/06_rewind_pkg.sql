@@ -228,6 +228,7 @@ CREATE OR REPLACE PACKAGE BODY rewind_pkg AS
     v_pending NUMBER;            -- UPDATE columns still to be restored
     v_emp     employees%ROWTYPE;
     v_err     VARCHAR2(500);
+    v_delegated BOOLEAN := FALSE; -- TRUE once a callee owns the failure logging
   BEGIN
     -- 1. authorization (same rule as the other restore procedures)
     IF NOT rewind_core.is_admin(v_user) THEN
@@ -305,9 +306,28 @@ CREATE OR REPLACE PACKAGE BODY rewind_pkg AS
                   || ' (change group)');
           COMMIT;
 
-        -- these two log their own SUCCESS row and COMMIT themselves
-        WHEN 'INSERT' THEN restore_inserted(p_change_group);
-        WHEN 'DELETE' THEN restore_deleted(p_change_group);
+        -- INSERT / DELETE groups are delegated. The callee logs its own SUCCESS
+        -- row and COMMITs, and logs its own FAILED row. Check first that
+        -- something is left to restore (ORA-20004 is logged by the handler below).
+        WHEN 'INSERT' THEN
+          SELECT COUNT(*) INTO v_pending FROM audit_log
+           WHERE change_group = p_change_group AND operation = 'INSERT'
+             AND table_name = 'EMPLOYEES' AND is_restored = 'N';
+          IF v_pending = 0 THEN
+            RAISE_APPLICATION_ERROR(-20004, 'This change group was already restored');
+          END IF;
+          v_delegated := TRUE;       -- from here the callee logs any failure
+          restore_inserted(p_change_group);
+
+        WHEN 'DELETE' THEN
+          SELECT COUNT(*) INTO v_pending FROM audit_log
+           WHERE change_group = p_change_group AND operation = 'DELETE'
+             AND table_name = 'EMPLOYEES' AND is_restored = 'N';
+          IF v_pending = 0 THEN
+            RAISE_APPLICATION_ERROR(-20004, 'This change group was already restored');
+          END IF;
+          v_delegated := TRUE;
+          restore_deleted(p_change_group);
 
         ELSE
           RAISE_APPLICATION_ERROR(-20011, 'Operation ' || v_op_min || ' cannot be restored');
@@ -317,7 +337,9 @@ CREATE OR REPLACE PACKAGE BODY rewind_pkg AS
         v_err := SUBSTR(SQLERRM, 1, 500);
         rewind_core.g_restoring := FALSE;
         ROLLBACK TO before_group;            -- nothing of this recovery stays
-        log_failure(v_first, p_change_group, 'restore_change_group: ' || v_err);
+        IF NOT v_delegated THEN              -- a callee already logged its own failure
+          log_failure(v_first, p_change_group, 'restore_change_group: ' || v_err);
+        END IF;
         RAISE;
     END;
   END restore_change_group;
