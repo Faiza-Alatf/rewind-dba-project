@@ -1,6 +1,7 @@
 # Data Dictionary – Rewind (Oracle)
 
 Schema owner: `REWIND`. 6 tables, 6 primary keys, 2 declared foreign keys.
+Audited tables: `EMPLOYEES` and `DEPARTMENTS`.
 ER diagram: `docs/er_diagram.png` (editable: `docs/er_diagram.drawio`).
 
 ## Relationships
@@ -9,14 +10,14 @@ ER diagram: `docs/er_diagram.png` (editable: `docs/er_diagram.drawio`).
 | `EMPLOYEES.DEPT_ID` | `DEPARTMENTS.DEPT_ID` | many-to-one | ✅ declared FK |
 | `SUSPICIOUS_ACTIVITY.AUDIT_ID` | `AUDIT_LOG.AUDIT_ID` | many-to-one | ✅ declared FK |
 | `RECOVERY_LOG.AUDIT_ID` | `AUDIT_LOG.AUDIT_ID` | logical | ❌ no FK (kept so failed attempts can be logged) |
-| `AUDIT_LOG.RECORD_ID` | `EMPLOYEES.EMP_ID` | logical | ❌ no FK (audit rows must survive after the employee is deleted) |
+| `AUDIT_LOG.RECORD_ID` | `EMPLOYEES.EMP_ID` or `DEPARTMENTS.DEPT_ID` (depends on `TABLE_NAME`) | logical | ❌ no FK (audit rows must survive after the record is deleted; one column serves two tables) |
 | `AUDIT_LOG.CHANGED_BY` | `APP_USERS.USERNAME` | logical | ❌ no FK (changes by unregistered users must still be logged) |
 
-## DEPARTMENTS – company departments
+## DEPARTMENTS – company departments (has the audit trigger)
 | Column | Type | Key | Description |
 |---|---|---|---|
 | DEPT_ID | NUMBER | PK | Department number |
-| DEPT_NAME | VARCHAR2(50) | | Department name (NOT NULL) |
+| DEPT_NAME | VARCHAR2(50) | | Department name (NOT NULL). Changes are audited as column `DEPT_NAME` |
 
 ## EMPLOYEES – monitored business table (has the audit trigger)
 | Column | Type | Key | Description |
@@ -36,13 +37,13 @@ ER diagram: `docs/er_diagram.png` (editable: `docs/er_diagram.drawio`).
 | APP_ROLE | VARCHAR2(10) | | `ADMIN`, `AUDITOR` or `HR` |
 | IS_ACTIVE | CHAR(1) | | `Y` = account can act, `N` = disabled |
 
-## AUDIT_LOG – one row per changed column (written only by the trigger)
+## AUDIT_LOG – one row per changed column (written only by the triggers)
 | Column | Type | Key | Description |
 |---|---|---|---|
 | AUDIT_ID | NUMBER | PK | Unique id from `AUDIT_SEQ` |
 | CHANGE_GROUP | VARCHAR2(32) | | GUID shared by all columns changed in one row operation |
-| TABLE_NAME | VARCHAR2(30) | | Table that was changed (`EMPLOYEES`) |
-| RECORD_ID | NUMBER | | Primary key of the changed row (EMP_ID) |
+| TABLE_NAME | VARCHAR2(30) | | Table that was changed: `EMPLOYEES` or `DEPARTMENTS` |
+| RECORD_ID | NUMBER | | Primary key of the changed row (EMP_ID or DEPT_ID, depending on `TABLE_NAME`) |
 | OPERATION | VARCHAR2(10) | | `INSERT`, `UPDATE`, `DELETE` or `RESTORE` |
 | COLUMN_NAME | VARCHAR2(30) | | Column that changed |
 | OLD_VALUE | VARCHAR2(4000) | | Value before the change |
@@ -51,6 +52,9 @@ ER diagram: `docs/er_diagram.png` (editable: `docs/er_diagram.drawio`).
 | CLIENT_HOST | VARCHAR2(100) | | Computer name of the session |
 | CHANGED_ON | TIMESTAMP | | Date and time of the change |
 | IS_RESTORED | CHAR(1) | | `Y` once an admin has restored this change |
+
+> Tip for queries and the GUI: always filter with `WHERE table_name = 'EMPLOYEES'` (or `'DEPARTMENTS'`),
+> because both tables write into the same `AUDIT_LOG`.
 
 ## SUSPICIOUS_ACTIVITY – changes flagged by the detection rules
 | Column | Type | Key | Description |
@@ -81,8 +85,11 @@ ER diagram: `docs/er_diagram.png` (editable: `docs/er_diagram.drawio`).
 |---|---|---|
 | Sequences | `AUDIT_SEQ`, `SUS_SEQ`, `REC_SEQ` | Ids for the three log tables |
 | Trigger | `TRG_EMPLOYEES_AUDIT` | Logs every INSERT/UPDATE/DELETE on EMPLOYEES |
+| Trigger | `TRG_DEPARTMENTS_AUDIT` | Logs every INSERT/UPDATE/DELETE of department names |
 | Package (internal) | `REWIND_CORE` | Logging + suspicious-activity rules (not granted to users) |
-| Package (public) | `REWIND_PKG` | `my_role`, `restore_value`, `restore_deleted`, `review_suspicious`, `activity_report` |
-| Views | `V_CHANGE_HISTORY`, `V_ACTIVITY_BY_USER`, `V_DAILY_ACTIVITY`, `V_SUSPICIOUS_DETAILS` | Reports and GUI screens |
-| Roles | `REWIND_ADMIN_ROLE`, `REWIND_AUDITOR_ROLE`, `REWIND_HR_ROLE` | Object privileges |
+| Package (public) | `REWIND_PKG` | `my_role`, `restore_value`, `restore_deleted`, `restore_inserted`, `review_suspicious`, `activity_report` |
+| Procedures | `RESTORE_DEPT_NAME`, `RESTORE_DEPT_DELETED` | Restore a renamed or deleted department (ADMIN only) |
+| Procedure (internal) | `REWIND_LOG_FAILURE` | Autonomous transaction: writes a `FAILED` row to `RECOVERY_LOG` that survives the rollback |
+| Views | `V_CHANGE_HISTORY`, `V_ACTIVITY_BY_USER`, `V_DAILY_ACTIVITY`, `V_SUSPICIOUS_DETAILS`, `V_DEPARTMENT_HISTORY` | Reports and GUI screens |
+| Roles | `REWIND_ADMIN_ROLE`, `REWIND_AUDITOR_ROLE`, `REWIND_HR_ROLE` | Object privileges. Only ADMIN may edit `DEPARTMENTS` |
 | Profile | `REWIND_PROFILE` | Account lock after 5 failed logins, password expiry |
