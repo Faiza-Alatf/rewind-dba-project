@@ -332,7 +332,7 @@ BEGIN
 END;
 /
 
-PROMPT --- Test 14 cleanup (test employee and department 60) ---
+PROMPT --- Test 14 cleanup (test employee and department 60)
 CONNECT rewind/"Rewind#123"@//localhost:1521/XEPDB1
 DELETE FROM rewind.employees WHERE emp_id = &v_t14_id;
 DELETE FROM rewind.departments WHERE dept_id = 60;
