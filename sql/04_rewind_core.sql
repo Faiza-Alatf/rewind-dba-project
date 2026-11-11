@@ -59,7 +59,8 @@ CREATE OR REPLACE PACKAGE BODY rewind_core AS
   END;
 
   PROCEDURE check_suspicious(p_audit_id NUMBER, p_first BOOLEAN, p_op VARCHAR2,
-                             p_col VARCHAR2, p_old VARCHAR2, p_new VARCHAR2, p_user VARCHAR2) IS
+                             p_col VARCHAR2, p_old VARCHAR2, p_new VARCHAR2, p_user VARCHAR2,
+                             p_table VARCHAR2, p_record_id NUMBER) IS
     v_old  NUMBER;
     v_new  NUMBER;
     v_cnt  NUMBER;
@@ -74,6 +75,21 @@ CREATE OR REPLACE PACKAGE BODY rewind_core AS
         flag(p_audit_id, 'Salary increased by more than 200% (' || p_old || ' -> ' || p_new || ')', 'HIGH');
       ELSIF v_old > 0 AND v_new <= v_old * 0.3 THEN
         flag(p_audit_id, 'Salary reduced by more than 70% (' || p_old || ' -> ' || p_new || ')', 'HIGH');
+      END IF;
+    END IF;
+
+    -- Rule 5: same employee's salary changed 2+ times on the same day
+    -- (log_change has already inserted the current audit row, so the current change is counted too)
+    IF p_op = 'UPDATE' AND p_col = 'SALARY' AND p_table = 'EMPLOYEES' THEN
+      SELECT COUNT(*) INTO v_cnt
+        FROM audit_log
+       WHERE table_name  = 'EMPLOYEES'
+         AND record_id   = p_record_id
+         AND column_name = 'SALARY'
+         AND operation   = 'UPDATE'
+         AND changed_on >= TRUNC(SYSDATE);
+      IF v_cnt >= 2 THEN
+        flag(p_audit_id, 'Salary of employee ' || p_record_id || ' changed ' || v_cnt || ' times today', 'MEDIUM');
       END IF;
     END IF;
 
@@ -125,7 +141,7 @@ CREATE OR REPLACE PACKAGE BODY rewind_core AS
     RETURNING audit_id INTO v_audit_id;
 
     IF v_op <> 'RESTORE' THEN
-      check_suspicious(v_audit_id, v_first, v_op, p_col, p_old, p_new, v_user);
+      check_suspicious(v_audit_id, v_first, v_op, p_col, p_old, p_new, v_user, p_table, p_record_id);
     END IF;
   END;
 END rewind_core;
