@@ -258,3 +258,105 @@ BEGIN
   DBMS_OUTPUT.PUT_LINE('recovery_log.status = ' || v_status || '  (expected FAILED)');
 END;
 /
+
+PROMPT ===== TEST 14: atomicity - FK error while restoring an UPDATE group =====
+-- Scenario: dept 60 exists when HR edits the employee, then dept 60 is deleted.
+-- Restoring dept_id = 60 must fail with ORA-02291 and NOTHING may change.
+CONNECT rewind/"Rewind#123"@//localhost:1521/XEPDB1
+SET SERVEROUTPUT ON
+SET VERIFY OFF
+-- pre-cleanup so the test also works after an aborted run
+DELETE FROM rewind.employees WHERE dept_id = 60;
+DELETE FROM rewind.departments WHERE dept_id = 60;
+INSERT INTO rewind.departments VALUES (60, 'Test Dept 60');
+COMMIT;
+COLUMN t14_id NEW_VALUE v_t14_id NOPRINT
+SELECT NVL(MAX(emp_id), 0) + 1 AS t14_id FROM rewind.employees;
+
+CONNECT rw_hr/"Hr#12345"@//localhost:1521/XEPDB1
+SET SERVEROUTPUT ON
+SET VERIFY OFF
+INSERT INTO rewind.employees VALUES (&v_t14_id, 'Atomicity Test', 'Tester', 50000, 60, SYSDATE, 'ACTIVE');
+COMMIT;
+-- one UPDATE group with two audit rows: SALARY and DEPT_ID
+UPDATE rewind.employees SET salary = 55000, dept_id = 30 WHERE emp_id = &v_t14_id;
+COMMIT;
+
+CONNECT rewind/"Rewind#123"@//localhost:1521/XEPDB1
+SET SERVEROUTPUT ON
+DELETE FROM rewind.departments WHERE dept_id = 60;
+COMMIT;
+
+CONNECT rw_admin/"Admin#12345"@//localhost:1521/XEPDB1
+SET SERVEROUTPUT ON
+SET VERIFY OFF
+DECLARE
+  v_group          VARCHAR2(32);
+  v_sal            NUMBER;
+  v_dept           NUMBER;
+  v_not_restored   NUMBER;
+  v_restore_before NUMBER;
+  v_restore_after  NUMBER;
+  v_failed         NUMBER;
+BEGIN
+  SELECT MAX(change_group) KEEP (DENSE_RANK LAST ORDER BY audit_id) INTO v_group
+    FROM rewind.audit_log
+   WHERE record_id = &v_t14_id AND operation = 'UPDATE' AND is_restored = 'N';
+
+  SELECT COUNT(*) INTO v_restore_before FROM rewind.audit_log
+   WHERE record_id = &v_t14_id AND operation = 'RESTORE';
+
+  BEGIN
+    rewind.rewind_pkg.restore_change_group(v_group);
+    DBMS_OUTPUT.PUT_LINE('ERROR: restore unexpectedly succeeded');
+  EXCEPTION WHEN OTHERS THEN
+    DBMS_OUTPUT.PUT_LINE('Expected error: ' || SQLERRM);
+  END;
+
+  SELECT salary, dept_id INTO v_sal, v_dept
+    FROM rewind.employees WHERE emp_id = &v_t14_id;
+  DBMS_OUTPUT.PUT_LINE('salary = ' || v_sal || '  (expected 55000, NOT back to 50000)');
+  DBMS_OUTPUT.PUT_LINE('dept_id = ' || v_dept || '  (expected 30)');
+
+  SELECT COUNT(*) INTO v_not_restored FROM rewind.audit_log
+   WHERE change_group = v_group AND is_restored = 'N';
+  DBMS_OUTPUT.PUT_LINE('audit_log rows still not restored = ' || v_not_restored || '  (expected 2)');
+
+  SELECT COUNT(*) INTO v_restore_after FROM rewind.audit_log
+   WHERE record_id = &v_t14_id AND operation = 'RESTORE';
+  DBMS_OUTPUT.PUT_LINE('new RESTORE rows = ' || (v_restore_after - v_restore_before) || '  (expected 0)');
+
+  SELECT COUNT(*) INTO v_failed FROM rewind.recovery_log
+   WHERE change_group = v_group AND status = 'FAILED';
+  DBMS_OUTPUT.PUT_LINE('FAILED rows for this group = ' || v_failed || '  (expected exactly 1)');
+END;
+/
+
+PROMPT --- Test 14 cleanup (test employee and department 60) ---
+CONNECT rewind/"Rewind#123"@//localhost:1521/XEPDB1
+DELETE FROM rewind.employees WHERE emp_id = &v_t14_id;
+DELETE FROM rewind.departments WHERE dept_id = 60;
+COMMIT;
+
+PROMPT ===== TEST 15: already-restored INSERT group -> ORA-20004 and exactly ONE new FAILED row =====
+CONNECT rw_admin/"Admin#12345"@//localhost:1521/XEPDB1
+SET SERVEROUTPUT ON
+DECLARE
+  v_group  VARCHAR2(32);
+  v_before NUMBER;
+  v_after  NUMBER;
+BEGIN
+  SELECT MAX(change_group) KEEP (DENSE_RANK LAST ORDER BY audit_id) INTO v_group
+    FROM rewind.audit_log WHERE operation = 'INSERT' AND is_restored = 'Y';
+  SELECT COUNT(*) INTO v_before FROM rewind.recovery_log
+   WHERE change_group = v_group AND status = 'FAILED';
+  BEGIN
+    rewind.rewind_pkg.restore_change_group(v_group);
+  EXCEPTION WHEN OTHERS THEN
+    DBMS_OUTPUT.PUT_LINE('Expected error: ' || SQLERRM);
+  END;
+  SELECT COUNT(*) INTO v_after FROM rewind.recovery_log
+   WHERE change_group = v_group AND status = 'FAILED';
+  DBMS_OUTPUT.PUT_LINE('new FAILED rows = ' || (v_after - v_before) || '  (expected exactly 1)');
+END;
+/
