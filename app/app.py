@@ -293,7 +293,7 @@ if "conn" not in st.session_state:
     login()
 else:
     conn, role = st.session_state["conn"], st.session_state["role"]
-    st.sidebar.title("âª Rewind")
+    st.sidebar.title("Rewind")
     st.sidebar.write(f"**User:** {st.session_state['user']}  \n**Role:** {role}")
     if st.sidebar.button("Logout"):
         conn.close()
