@@ -95,6 +95,8 @@ CREATE OR REPLACE PACKAGE BODY rewind_core AS
 
     -- Rule 6: mass delete (5+ employees deleted by one user within 1 minute)
     -- Checked once per deleted row (first column only) so we do not get 6 flags per row.
+    -- The flag is raised ONLY when the count reaches exactly 5 (the 5th delete), so one
+    -- mass delete produces exactly 1 flag instead of one flag for every further row.
     IF p_op = 'DELETE' AND p_table = 'EMPLOYEES' AND p_first THEN
       SELECT COUNT(DISTINCT change_group) INTO v_cnt
         FROM audit_log
@@ -102,8 +104,8 @@ CREATE OR REPLACE PACKAGE BODY rewind_core AS
          AND operation  = 'DELETE'
          AND changed_by = p_user
          AND changed_on > SYSTIMESTAMP - INTERVAL '1' MINUTE;
-      IF v_cnt >= 5 THEN
-        flag(p_audit_id, 'Mass delete: ' || v_cnt || ' employees deleted by ' || p_user || ' within 1 minute', 'HIGH');
+      IF v_cnt = 5 THEN
+        flag(p_audit_id, 'Mass delete: ' || v_cnt || '+ employees deleted by ' || p_user || ' within 1 minute', 'HIGH');
       END IF;
     END IF;
 
