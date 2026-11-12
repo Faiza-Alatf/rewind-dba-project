@@ -266,8 +266,8 @@ CONNECT rewind/"Rewind#123"@//localhost:1521/XEPDB1
 SET SERVEROUTPUT ON
 SET VERIFY OFF
 -- pre-cleanup so the test also works after an aborted run
-DELETE FROM rewind.employees WHERE dept_id = 60;
-DELETE FROM rewind.departments WHERE dept_id = 60;
+DELETE FROM rewind.employees WHERE dept_id = 60 AND emp_name = 'Atomicity Test';
+DELETE FROM rewind.departments WHERE dept_id = 60 AND dept_name = 'Test Dept 60';
 INSERT INTO rewind.departments VALUES (60, 'Test Dept 60');
 COMMIT;
 COLUMN t14_id NEW_VALUE v_t14_id NOPRINT
@@ -284,7 +284,7 @@ COMMIT;
 
 CONNECT rewind/"Rewind#123"@//localhost:1521/XEPDB1
 SET SERVEROUTPUT ON
-DELETE FROM rewind.departments WHERE dept_id = 60;
+DELETE FROM rewind.departments WHERE dept_id = 60 AND dept_name = 'Test Dept 60';
 COMMIT;
 
 CONNECT rw_admin/"Admin#12345"@//localhost:1521/XEPDB1
@@ -335,26 +335,56 @@ END;
 PROMPT --- Test 14 cleanup (test employee and department 60)
 CONNECT rewind/"Rewind#123"@//localhost:1521/XEPDB1
 DELETE FROM rewind.employees WHERE emp_id = &v_t14_id;
-DELETE FROM rewind.departments WHERE dept_id = 60;
+DELETE FROM rewind.departments WHERE dept_id = 60 AND dept_name = 'Test Dept 60';
 COMMIT;
 
 PROMPT ===== TEST 15: already-restored INSERT group -> ORA-20004 and exactly ONE new FAILED row =====
+-- Self-contained: HR inserts its own test employee, ADMIN undoes the INSERT (success),
+-- then undoes it a second time (must fail with ORA-20004 and log exactly one FAILED row).
+-- Nothing depends on data left behind by other tests.
+CONNECT rewind/"Rewind#123"@//localhost:1521/XEPDB1
+SET SERVEROUTPUT ON
+SET VERIFY OFF
+COLUMN t15_id NEW_VALUE v_t15_id NOPRINT
+SELECT NVL(MAX(emp_id), 0) + 1 AS t15_id FROM rewind.employees;
+
+CONNECT rw_hr/"Hr#12345"@//localhost:1521/XEPDB1
+SET SERVEROUTPUT ON
+SET VERIFY OFF
+INSERT INTO rewind.employees (emp_id, emp_name, job_title, salary, dept_id, hire_date, status)
+VALUES (&v_t15_id, 'Test15 Person', 'Tester', 40000, 30, SYSDATE, 'ACTIVE');
+COMMIT;
+
 CONNECT rw_admin/"Admin#12345"@//localhost:1521/XEPDB1
 SET SERVEROUTPUT ON
+SET VERIFY OFF
 DECLARE
   v_group  VARCHAR2(32);
+  v_exists NUMBER;
   v_before NUMBER;
   v_after  NUMBER;
 BEGIN
-  SELECT MAX(change_group) KEEP (DENSE_RANK LAST ORDER BY audit_id) INTO v_group
-    FROM rewind.audit_log WHERE operation = 'INSERT' AND is_restored = 'Y';
+  SELECT MAX(change_group) INTO v_group
+    FROM rewind.audit_log
+   WHERE table_name = 'EMPLOYEES' AND record_id = &v_t15_id
+     AND operation = 'INSERT' AND is_restored = 'N';
+
+  -- 1st undo: must succeed (the test employee disappears)
+  rewind.rewind_pkg.restore_change_group(v_group);
+  SELECT COUNT(*) INTO v_exists FROM rewind.employees WHERE emp_id = &v_t15_id;
+  DBMS_OUTPUT.PUT_LINE('1st undo: employee rows left = ' || v_exists || '  (expected 0)');
+
   SELECT COUNT(*) INTO v_before FROM rewind.recovery_log
    WHERE change_group = v_group AND status = 'FAILED';
+
+  -- 2nd undo of the same group: must fail
   BEGIN
     rewind.rewind_pkg.restore_change_group(v_group);
+    DBMS_OUTPUT.PUT_LINE('ERROR: 2nd undo unexpectedly succeeded');
   EXCEPTION WHEN OTHERS THEN
     DBMS_OUTPUT.PUT_LINE('Expected error: ' || SQLERRM);
   END;
+
   SELECT COUNT(*) INTO v_after FROM rewind.recovery_log
    WHERE change_group = v_group AND status = 'FAILED';
   DBMS_OUTPUT.PUT_LINE('new FAILED rows = ' || (v_after - v_before) || '  (expected exactly 1)');
