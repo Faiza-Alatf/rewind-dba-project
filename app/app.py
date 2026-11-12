@@ -6,7 +6,7 @@ import oracledb
 import pandas as pd
 import streamlit as st
 
-st.set_page_config(page_title="Rewind", page_icon="âª", layout="wide")
+st.set_page_config(page_title="Rewind", layout="wide")
 S = "rewind"  # schema name
 
 PAGES_BY_ROLE = {
@@ -193,9 +193,10 @@ def recovery(conn):
                      f"FROM {S}.audit_log WHERE operation='UPDATE' AND is_restored='N' "
                      "ORDER BY audit_id DESC FETCH FIRST 50 ROWS ONLY")
     st.dataframe(df, use_container_width=True, hide_index=True)
+
     if not df.empty:
         pick = st.selectbox("Audit ID to restore", df.audit_id.tolist())
-        if st.button("âª Restore previous value"):
+        if st.button("Restore previous value"):
             try:
                 with conn.cursor() as cur:
                     cur.callproc(f"{S}.rewind_pkg.restore_value", [int(pick)])
@@ -208,16 +209,16 @@ def recovery(conn):
                        f"FROM {S}.audit_log WHERE operation='DELETE' AND is_restored='N' "
                        "GROUP BY change_group, record_id ORDER BY 4 DESC")
     st.dataframe(dele, use_container_width=True, hide_index=True)
+
     if not dele.empty:
         grp = st.selectbox("Change group", dele.change_group.tolist())
-        if st.button("âª Restore deleted employee"):
+        if st.button("Restore deleted employee"):
             try:
                 with conn.cursor() as cur:
                     cur.callproc(f"{S}.rewind_pkg.restore_deleted", [grp])
                 st.success("Employee restored.")
             except oracledb.DatabaseError as e:
                 db_error(e)
-
 
 def suspicious(conn):
     st.header("Suspicious Activity")
