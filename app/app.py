@@ -33,10 +33,10 @@ def db_error(e):
 
 
 def login():
-    st.title("âª Rewind â€“ Database Time Machine")
+    st.title("Rewind - Database Time Machine")
     st.caption("Log in with your Oracle database account")
     with st.form("login"):
-        dsn = st.text_input("DSN", "192.168.0.107:1521/XEPDB1")
+        dsn = st.text_input("DSN", "localhost:1521/XEPDB1")
         user = st.text_input("Username", "rw_admin")
         pwd = st.text_input("Password", type="password")
         if st.form_submit_button("Login"):
@@ -94,6 +94,11 @@ def timeline(conn):
         return
 
     start_date, end_date = date_range
+
+    if start_date > end_date:
+        st.error("Invalid date range: Start date cannot be after end date.")
+        return
+
     n = st.slider("Show latest N entries", 10, 500, 50)
 
     df = query(
@@ -133,6 +138,9 @@ def history(conn):
         return
 
     start_date, end_date = date_range
+    if start_date > end_date:
+        st.error("Invalid date range: Start date cannot be after end date.")
+        return
 
     df = query(
         conn,
@@ -296,4 +304,6 @@ else:
         PAGE_FUNCS[page](conn)
     except oracledb.DatabaseError as e:
         db_error(e)
+
+
 
