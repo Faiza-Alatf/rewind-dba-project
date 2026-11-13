@@ -1,4 +1,4 @@
-"""Rewind - Database Time Machine & Recovery System (Streamlit GUI).
+﻿"""Rewind - Database Time Machine & Recovery System (Streamlit GUI).
 Users log in with their ORACLE credentials, so every change is attributed to the real DB user.
 Run:  streamlit run app.py
 """
@@ -6,7 +6,7 @@ import oracledb
 import pandas as pd
 import streamlit as st
 
-st.set_page_config(page_title="Rewind", page_icon="⏪", layout="wide")
+st.set_page_config(page_title="Rewind", layout="wide")
 S = "rewind"  # schema name
 
 PAGES_BY_ROLE = {
@@ -33,7 +33,7 @@ def db_error(e):
 
 
 def login():
-    st.title("⏪ Rewind – Database Time Machine")
+    st.title("Rewind - Database Time Machine")
     st.caption("Log in with your Oracle database account")
     with st.form("login"):
         dsn = st.text_input("DSN", "localhost:1521/XEPDB1")
@@ -79,23 +79,90 @@ def dashboard(conn):
 
 def timeline(conn):
     st.header("Database Activity Timeline")
+
+    date_range = st.date_input(
+        "Select Date Range",
+        value=(
+            pd.Timestamp("2000-01-01").date(),
+            pd.Timestamp.today().date()
+        ),
+        key="timeline_date_range"
+    )
+
+    if len(date_range) != 2:
+        st.info("Please select both start date and end date.")
+        return
+
+    start_date, end_date = date_range
+
+    if start_date > end_date:
+        st.error("Invalid date range: Start date cannot be after end date.")
+        return
+
     n = st.slider("Show latest N entries", 10, 500, 50)
-    df = query(conn, f"SELECT changed_on, changed_by, operation, table_name, record_id, column_name, "
-                     f"old_value, new_value, is_suspicious, is_restored FROM {S}.v_change_history "
-                     "ORDER BY audit_id DESC FETCH FIRST :n ROWS ONLY", {"n": n})
+
+    df = query(
+        conn,
+        f"SELECT changed_on, changed_by, operation, table_name, record_id, column_name, "
+        f"old_value, new_value, is_suspicious, is_restored "
+        f"FROM {S}.v_change_history "
+        "WHERE changed_on >= TO_DATE(:start_date, 'YYYY-MM-DD') "
+        "AND changed_on < TO_DATE(:end_date, 'YYYY-MM-DD') + 1 "
+        "ORDER BY audit_id DESC FETCH FIRST :n ROWS ONLY",
+        {
+            "start_date": start_date.strftime("%Y-%m-%d"),
+            "end_date": end_date.strftime("%Y-%m-%d"),
+            "n": n
+        }
+    )
+
     st.dataframe(df, use_container_width=True, hide_index=True)
 
 
 def history(conn):
     st.header("Change History")
+
     emp = st.number_input("Employee ID", min_value=0, value=101, step=1)
-    df = query(conn, f"SELECT audit_id, changed_on, operation, column_name, old_value, new_value, "
-                     f"changed_by, is_suspicious, is_restored FROM {S}.v_change_history "
-                     "WHERE record_id = :id ORDER BY audit_id DESC", {"id": int(emp)})
+
+    date_range = st.date_input(
+        "Select Date Range",
+        value=(
+            pd.Timestamp("2000-01-01").date(),
+            pd.Timestamp.today().date()
+        ),
+        key="history_date_range"
+    )
+
+    if len(date_range) != 2:
+        st.info("Please select both start date and end date.")
+        return
+
+    start_date, end_date = date_range
+    if start_date > end_date:
+        st.error("Invalid date range: Start date cannot be after end date.")
+        return
+
+    df = query(
+        conn,
+        f"SELECT audit_id, changed_on, operation, column_name, old_value, new_value, "
+        f"changed_by, is_suspicious, is_restored "
+        f"FROM {S}.v_change_history "
+        "WHERE record_id = :id "
+        "AND changed_on >= TO_DATE(:start_date, 'YYYY-MM-DD') "
+        "AND changed_on < TO_DATE(:end_date, 'YYYY-MM-DD') + 1 "
+        "ORDER BY audit_id DESC",
+        {
+            "id": int(emp),
+            "start_date": start_date.strftime("%Y-%m-%d"),
+            "end_date": end_date.strftime("%Y-%m-%d")
+        }
+    )
+
     if df.empty:
-        st.info("No changes recorded for this employee.")
+        st.info("No changes recorded for this employee in the selected date range.")
     else:
         st.dataframe(df, use_container_width=True, hide_index=True)
+
 
 
 def compare(conn):
@@ -126,9 +193,10 @@ def recovery(conn):
                      f"FROM {S}.audit_log WHERE operation='UPDATE' AND is_restored='N' "
                      "ORDER BY audit_id DESC FETCH FIRST 50 ROWS ONLY")
     st.dataframe(df, use_container_width=True, hide_index=True)
+
     if not df.empty:
         pick = st.selectbox("Audit ID to restore", df.audit_id.tolist())
-        if st.button("⏪ Restore previous value"):
+        if st.button("Restore previous value"):
             try:
                 with conn.cursor() as cur:
                     cur.callproc(f"{S}.rewind_pkg.restore_value", [int(pick)])
@@ -141,16 +209,16 @@ def recovery(conn):
                        f"FROM {S}.audit_log WHERE operation='DELETE' AND is_restored='N' "
                        "GROUP BY change_group, record_id ORDER BY 4 DESC")
     st.dataframe(dele, use_container_width=True, hide_index=True)
+
     if not dele.empty:
         grp = st.selectbox("Change group", dele.change_group.tolist())
-        if st.button("⏪ Restore deleted employee"):
+        if st.button("Restore deleted employee"):
             try:
                 with conn.cursor() as cur:
                     cur.callproc(f"{S}.rewind_pkg.restore_deleted", [grp])
                 st.success("Employee restored.")
             except oracledb.DatabaseError as e:
                 db_error(e)
-
 
 def suspicious(conn):
     st.header("Suspicious Activity")
@@ -226,7 +294,7 @@ if "conn" not in st.session_state:
     login()
 else:
     conn, role = st.session_state["conn"], st.session_state["role"]
-    st.sidebar.title("⏪ Rewind")
+    st.sidebar.title("Rewind")
     st.sidebar.write(f"**User:** {st.session_state['user']}  \n**Role:** {role}")
     if st.sidebar.button("Logout"):
         conn.close()
@@ -237,3 +305,6 @@ else:
         PAGE_FUNCS[page](conn)
     except oracledb.DatabaseError as e:
         db_error(e)
+
+
+
