@@ -1,4 +1,4 @@
-"""Rewind - Database Time Machine & Recovery System (Streamlit GUI).
+﻿"""Rewind - Database Time Machine & Recovery System (Streamlit GUI).
 Users log in with their ORACLE credentials, so every change is attributed to the real DB user.
 Run:  streamlit run app.py
 """
@@ -147,7 +147,7 @@ def history(conn):
         f"SELECT audit_id, changed_on, operation, column_name, old_value, new_value, "
         f"changed_by, is_suspicious, is_restored "
         f"FROM {S}.v_change_history "
-        "WHERE record_id = :id "
+        "WHERE table_name = 'EMPLOYEES' AND record_id = :id "
         "AND changed_on >= TO_DATE(:start_date, 'YYYY-MM-DD') "
         "AND changed_on < TO_DATE(:end_date, 'YYYY-MM-DD') + 1 "
         "ORDER BY audit_id DESC",
@@ -168,7 +168,7 @@ def history(conn):
 def compare(conn):
     st.header("Before vs After Comparison")
     df = query(conn, f"SELECT audit_id, change_group, record_id, column_name, changed_by FROM {S}.audit_log "
-                     "WHERE operation='UPDATE' ORDER BY audit_id DESC FETCH FIRST 100 ROWS ONLY")
+                     "WHERE operation='UPDATE' AND table_name='EMPLOYEES' ORDER BY audit_id DESC FETCH FIRST 100 ROWS ONLY")
     if df.empty:
         st.info("No updates recorded yet.")
         return
@@ -177,10 +177,10 @@ def compare(conn):
     pick = st.selectbox("Select a change", list(labels), format_func=labels.get)
     row = df[df.audit_id == pick].iloc[0]
     detail = query(conn, f"SELECT column_name, old_value, new_value FROM {S}.audit_log "
-                         "WHERE change_group = :g ORDER BY audit_id", {"g": row.change_group})
+                         "WHERE change_group = :g AND table_name='EMPLOYEES' ORDER BY audit_id", {"g": row.change_group})
     detail.columns = ["Column", "Before", "After"]
     st.dataframe(detail, width="stretch", hide_index=True)
-    one = query(conn, f"SELECT old_value, new_value FROM {S}.audit_log WHERE audit_id=:i", {"i": int(pick)})
+    one = query(conn, f"SELECT old_value, new_value FROM {S}.audit_log WHERE audit_id=:i AND table_name='EMPLOYEES'", {"i": int(pick)})
     a, b = st.columns(2)
     a.metric("Before", one.old_value[0])
     b.metric("After", one.new_value[0])
