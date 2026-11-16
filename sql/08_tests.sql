@@ -10,8 +10,8 @@
 --  3  ADMIN restore_value                             -> salary = 80000
 --  4  HR deletes emp 115, ADMIN restore_deleted       -> employee is back
 --  5  Unregistered RW_GUEST updates data              -> flagged HIGH
---  6  AUDITOR sees flags, cannot restore              -> ORA-20001
---  7  Full history of emp 101                         -> list of audit rows
+--  6  AUDITOR sees latest 10 flags, cannot restore    -> ORA-20001
+--  7  Latest 10 history rows of emp 101               -> list of audit rows
 --  8  HR inserts, ADMIN restore_inserted              -> 0 rows, flag Y, SUCCESS
 --  9  HR calls restore_inserted                       -> ORA-20001
 -- 10  restore_change_group on UPDATE group (2 cols)   -> both columns restored
@@ -139,14 +139,15 @@ WHERE emp_id = 102;
 COMMIT;
 
 
-PROMPT ===== TEST 6: AUDITOR reviews suspicious activity and tries to restore =====
+PROMPT ===== TEST 6: AUDITOR reviews latest 10 suspicious flags and tries to restore =====
 
 CONNECT rw_auditor/"Auditor#12345"@//localhost:1521/XEPDB1
 SET SERVEROUTPUT ON
 
 SELECT sus_id, severity, reason, changed_by
 FROM rewind.v_suspicious_details
-ORDER BY sus_id;
+ORDER BY sus_id DESC
+FETCH FIRST 10 ROWS ONLY;
 
 BEGIN
   rewind.rewind_pkg.restore_value(1);
@@ -157,7 +158,7 @@ END;
 /
 
 
-PROMPT ===== TEST 7: full history of employee 101 =====
+PROMPT ===== TEST 7: latest 10 history rows of employee 101 =====
 
 SELECT audit_id,
        operation,
@@ -168,8 +169,8 @@ SELECT audit_id,
        TO_CHAR(changed_on, 'YYYY-MM-DD HH24:MI:SS') AS changed_on
 FROM rewind.v_change_history
 WHERE record_id = 101
-ORDER BY audit_id;
-
+ORDER BY audit_id DESC
+FETCH FIRST 10 ROWS ONLY;
 
 PROMPT ===== TEST 8: HR inserts a new employee, ADMIN undoes the INSERT =====
 
