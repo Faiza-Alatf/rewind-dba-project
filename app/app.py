@@ -11,13 +11,14 @@ S = "rewind"  # schema name
 
 PAGES_BY_ROLE = {
     "ADMIN":   ["Admin Dashboard", "Database Activity Timeline", "Change History", "Before vs After",
-                "Record Recovery", "Suspicious Activity", "User Activity & Audit Logs", "Simulate Changes"],
+                "Record Recovery", "Suspicious Activity", "User Activity & Audit Logs",
+                "Activity Report", "Department History", "Simulate Changes"],
     "AUDITOR": ["Admin Dashboard", "Database Activity Timeline", "Change History", "Before vs After",
-                "Suspicious Activity", "User Activity & Audit Logs"],
+                "Suspicious Activity", "User Activity & Audit Logs",
+                "Activity Report", "Department History"],
     "HR":      ["Simulate Changes"],
     "NONE":    ["Simulate Changes"],
 }
-
 
 # ---------------------------------------------------------------- helpers
 def query(conn, sql, params=None):
@@ -185,7 +186,48 @@ def compare(conn):
     a.metric("Before", one.old_value[0])
     b.metric("After", one.new_value[0])
 
+def suspicious(conn):
+    st.header("Suspicious Activity")
 
+    severity = st.selectbox(
+        "Filter by Severity",
+        ["ALL", "HIGH", "MEDIUM", "LOW"],
+        key="suspicious_severity"
+    )
+
+    df = query(
+        conn,
+        f"""SELECT sus_id, severity, reason, changed_by, record_id,
+                   column_name, old_value, new_value, detected_on,
+                   reviewed, reviewed_by
+            FROM {S}.v_suspicious_details
+            WHERE (:severity = 'ALL' OR severity = :severity)
+            ORDER BY sus_id DESC""",
+        {"severity": severity}
+    )
+
+    st.dataframe(df, width="stretch", hide_index=True)
+
+    open_ids = df[df.reviewed == "N"].sus_id.tolist() if not df.empty else []
+
+    if open_ids:
+        pick = st.selectbox(
+            "Mark as reviewed",
+            open_ids,
+            key="suspicious_review_pick"
+        )
+
+        if st.button("Mark reviewed"):
+            try:
+                with conn.cursor() as cur:
+                    cur.callproc(
+                        f"{S}.rewind_pkg.review_suspicious",
+                        [int(pick)]
+                    )
+                st.success("Marked as reviewed.")
+                st.rerun()
+            except oracledb.DatabaseError as e:
+                db_error(e)
 def recovery(conn):
     st.header("Record Recovery")
     st.subheader("Restore an updated value")
@@ -236,23 +278,86 @@ def recovery(conn):
             except oracledb.DatabaseError as e:
                 db_error(e)
 
-def suspicious(conn):
-    st.header("Suspicious Activity")
-    df = query(conn, f"SELECT sus_id, severity, reason, changed_by, record_id, column_name, old_value, "
-                     f"new_value, detected_on, reviewed, reviewed_by FROM {S}.v_suspicious_details "
-                     "ORDER BY sus_id DESC")
+def activity_report(conn):
+    st.header("Activity Report")
+
+    date_range = st.date_input(
+        "Select Date Range",
+        value=(
+            pd.Timestamp("2000-01-01").date(),
+            pd.Timestamp.today().date()
+        ),
+        key="activity_report_date_range"
+    )
+
+    if len(date_range) != 2:
+        st.info("Please select both start and end dates.")
+        return
+
+    from_date, to_date = date_range
+
+    if from_date > to_date:
+        st.error("Start date cannot be after end date.")
+        return
+
+    with conn.cursor() as cur:
+        report_cursor = cur.callfunc(
+            f"{S}.rewind_pkg.activity_report",
+            oracledb.CURSOR,
+            [from_date, to_date]
+        )
+        try:
+            columns = [col[0].lower() for col in report_cursor.description]
+            rows = report_cursor.fetchall()
+            df = pd.DataFrame(rows, columns=columns)
+        finally:
+            report_cursor.close()
+
     st.dataframe(df, width="stretch", hide_index=True)
-    open_ids = df[df.reviewed == "N"].sus_id.tolist() if not df.empty else []
-    if open_ids:
-        pick = st.selectbox("Mark as reviewed", open_ids)
-        if st.button("Mark reviewed"):
-            try:
-                with conn.cursor() as cur:
-                    cur.callproc(f"{S}.rewind_pkg.review_suspicious", [int(pick)])
-                st.success("Marked as reviewed.")
-                st.rerun()
-            except oracledb.DatabaseError as e:
-                db_error(e)
+
+    st.download_button(
+        "Download CSV",
+        df.to_csv(index=False),
+        "activity_report.csv",
+        "text/csv"
+    )
+def department_history(conn):
+    st.header("Department History")
+
+    date_range = st.date_input(
+        "Select Date Range",
+        value=(
+            pd.Timestamp("2000-01-01").date(),
+            pd.Timestamp.today().date()
+        ),
+        key="department_history_date_range"
+    )
+
+    if len(date_range) != 2:
+        st.info("Please select both start and end dates.")
+        return
+
+    start_date, end_date = date_range
+
+    if start_date > end_date:
+        st.error("Start date cannot be after end date.")
+        return
+
+    df = query(
+        conn,
+        f"""SELECT audit_id, dept_id, current_name, operation,
+                   old_value, new_value, changed_by, changed_on, is_restored
+            FROM {S}.v_department_history
+            WHERE changed_on >= :start_date
+              AND changed_on < :end_date + 1
+            ORDER BY changed_on DESC""",
+        {
+            "start_date": start_date,
+            "end_date": end_date
+        }
+    )
+
+    st.dataframe(df, width="stretch", hide_index=True)
 
 
 def logs(conn):
@@ -300,9 +405,16 @@ def simulate(conn):
 
 
 PAGE_FUNCS = {
-    "Admin Dashboard": dashboard, "Database Activity Timeline": timeline, "Change History": history,
-    "Before vs After": compare, "Record Recovery": recovery, "Suspicious Activity": suspicious,
-    "User Activity & Audit Logs": logs, "Simulate Changes": simulate,
+    "Admin Dashboard": dashboard,
+    "Database Activity Timeline": timeline,
+    "Change History": history,
+    "Before vs After": compare,
+    "Record Recovery": recovery,
+    "Suspicious Activity": suspicious,
+    "User Activity & Audit Logs": logs,
+    "Activity Report": activity_report,
+    "Department History": department_history,
+    "Simulate Changes": simulate,
 }
 
 # ---------------------------------------------------------------- main
