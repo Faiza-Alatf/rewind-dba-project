@@ -1,4 +1,4 @@
-"""Rewind - Database Time Machine & Recovery System (Streamlit GUI).
+﻿"""Rewind - Database Time Machine & Recovery System (Streamlit GUI).
 Users log in with their ORACLE credentials, so every change is attributed to the real DB user.
 Run:  streamlit run app.py
 """
@@ -10,16 +10,15 @@ st.set_page_config(page_title="Rewind", layout="wide")
 S = "rewind"  # schema name
 
 PAGES_BY_ROLE = {
-"ADMIN":   ["Admin Dashboard", "Database Activity Timeline", "Change History", "Before vs After",
-            "Record Recovery", "Suspicious Activity", "User Activity & Audit Logs",
-            "Activity Report", "Department History", "Simulate Changes"],
-"AUDITOR": ["Admin Dashboard", "Database Activity Timeline", "Change History", "Before vs After",
-            "Suspicious Activity", "User Activity & Audit Logs",
-            "Activity Report", "Department History"],
+    "ADMIN":   ["Admin Dashboard", "Database Activity Timeline", "Change History", "Before vs After",
+                "Record Recovery", "Suspicious Activity", "User Activity & Audit Logs",
+                "Activity Report", "Department History", "Simulate Changes"],
+    "AUDITOR": ["Admin Dashboard", "Database Activity Timeline", "Change History", "Before vs After",
+                "Suspicious Activity", "User Activity & Audit Logs",
+                "Activity Report", "Department History"],
     "HR":      ["Simulate Changes"],
     "NONE":    ["Simulate Changes"],
 }
-
 
 # ---------------------------------------------------------------- helpers
 def query(conn, sql, params=None):
@@ -263,6 +262,22 @@ def recovery(conn):
             except oracledb.DatabaseError as e:
                 db_error(e)
 
+    st.subheader("Undo an inserted employee")
+    ins = query(conn, f"SELECT change_group, record_id, MIN(changed_by) inserted_by, MIN(changed_on) inserted_on "
+                      f"FROM {S}.audit_log WHERE operation='INSERT' AND table_name='EMPLOYEES' AND is_restored='N' "
+                      "GROUP BY change_group, record_id ORDER BY 4 DESC")
+    st.dataframe(ins, width="stretch", hide_index=True)
+
+    if not ins.empty:
+        grp_insert = st.selectbox("Insert change group", ins.change_group.tolist(), key="insert_change_group")
+        if st.button("Undo inserted employee"):
+            try:
+                with conn.cursor() as cur:
+                    cur.callproc(f"{S}.rewind_pkg.restore_inserted", [grp_insert])
+                st.success("Inserted employee undone.")
+            except oracledb.DatabaseError as e:
+                db_error(e)
+
 def activity_report(conn):
     st.header("Activity Report")
 
@@ -343,21 +358,6 @@ def department_history(conn):
     )
 
     st.dataframe(df, width="stretch", hide_index=True)
-    st.subheader("Undo an inserted employee")
-    ins = query(conn, f"SELECT change_group, record_id, MIN(changed_by) inserted_by, MIN(changed_on) inserted_on "
-                      f"FROM {S}.audit_log WHERE operation='INSERT' AND table_name='EMPLOYEES' AND is_restored='N' "
-                      "GROUP BY change_group, record_id ORDER BY 4 DESC")
-    st.dataframe(ins, width="stretch", hide_index=True)
-
-    if not ins.empty:
-        grp_insert = st.selectbox("Insert change group", ins.change_group.tolist(), key="insert_change_group")
-        if st.button("Undo inserted employee"):
-            try:
-                with conn.cursor() as cur:
-                    cur.callproc(f"{S}.rewind_pkg.restore_inserted", [grp_insert])
-                st.success("Inserted employee undone.")
-            except oracledb.DatabaseError as e:
-                db_error(e)
 
 
 def logs(conn):
