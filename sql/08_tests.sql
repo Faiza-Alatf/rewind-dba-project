@@ -169,6 +169,7 @@ SELECT audit_id,
        TO_CHAR(changed_on, 'YYYY-MM-DD HH24:MI:SS') AS changed_on
 FROM rewind.v_change_history
 WHERE record_id = 101
+  AND table_name = 'EMPLOYEES'
 ORDER BY audit_id DESC
 FETCH FIRST 10 ROWS ONLY;
 
