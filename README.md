@@ -27,6 +27,19 @@ history, flags suspicious changes and lets an ADMIN restore previous data safely
 > The scripts were written without a live Oracle instance, so the first run may show small
 > compile errors. Run `SHOW ERRORS` in SQL*Plus, fix on your branch and open a pull request.
 
+## Fresh install (rebuild the whole database in about a minute)
+
+> ⚠️ Step 1 deletes ALL REWIND data. Use a test database only.
+> Run every command from the `sql` folder (`cd sql`).
+
+1. Remove the old install (as SYSTEM): `sqlplus system/<pwd>@//localhost:1521/XEPDB1 @uninstall.sql`
+2. Create users, roles and profile (as SYSTEM): `sqlplus system/<pwd>@//localhost:1521/XEPDB1 @01_users_roles.sql`
+3. Install the schema (as REWIND, runs 02-07, 09, 10): `sqlplus rewind/"Rewind#123"@//localhost:1521/XEPDB1 @install_all.sql`
+4. Check `install_all_output.log`: no `ORA-`/`PLS-` errors, CHECK 1 returns no rows, employees = 115, audit_rows = 0.
+5. Run the tests: `sqlplus /nolog @08_tests.sql` (output in `08_tests_output.log`; all 16 tests must match their "expected" values).
+6. Start the GUI: `cd ..\app`, then `pip install -r requirements.txt` and `streamlit run app.py`
+   (log in with `rw_admin / Admin#12345`).
+
 ## Demo story (for the viva)
 1. Login as `rw_hr` → *Simulate Changes* → set Ahmed Khan's salary 80,000 → 800,000.
 2. Login as `rw_auditor` → *Suspicious Activity* shows the HIGH alert → *Before vs After*.
