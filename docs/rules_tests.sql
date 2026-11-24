@@ -4,7 +4,7 @@
 --   Rule 1  salary jump x3 or more / drop to 30 percent or less   HIGH
 --   Rule 2  change outside working hours (08-18, Mon-Fri)         MEDIUM
 --   Rule 3  change by a user without HR/ADMIN application role    HIGH
---   Rule 4  bulk modification, 10+ rows by one user in 1 minute   MEDIUM
+--   Rule 4  bulk modification, 10+ rows by one user in 1 minute   MEDIUM (one flag per burst)
 --   Rule 5  same employee salary changed 2+ times on one day      MEDIUM
 --   Rule 6  mass delete, 5+ employees by one user in 1 minute     HIGH
 -- Every test has a positive case (flag must appear) and a negative case
@@ -12,7 +12,7 @@
 --
 -- How to run (from the repo root, after scripts 01-07, 09 and 10):
 --   sqlplus /nolog @docs\rules_tests.sql
--- Takes about 5 minutes: the 1-minute rules (4 and 6) need idle gaps.
+-- Takes about 6 minutes: the 1-minute rules (4 and 6) need idle gaps.
 --
 -- Test data: temporary employees (ids derived from the audit sequence, so
 -- they are new in every run) and employees 231-239, 241-250, 261-264,
@@ -200,6 +200,13 @@ SELECT 'D2 dept renamed twice -> no Rule 5 / Rule 1' AS test, 0 AS expected, COU
  WHERE s.sus_id > &base_sus AND a.table_name = 'DEPARTMENTS'
    AND (s.reason LIKE '%times today' OR s.reason LIKE 'Salary %');
 
+PROMPT -- D3: department changes DO count for Rule 4, but one burst = exactly ONE flag (12 changes by RW_ADMIN)
+SELECT 'D3 12 dept changes -> exactly ONE Bulk flag' AS test, 1 AS expected, COUNT(*) AS actual,
+       CASE WHEN COUNT(*) = 1 THEN 'PASS' ELSE 'FAIL' END AS result
+  FROM rewind.suspicious_activity s JOIN rewind.audit_log a ON a.audit_id = s.audit_id
+ WHERE s.sus_id > &base_sus AND a.table_name = 'DEPARTMENTS' AND a.changed_by = 'RW_ADMIN'
+   AND s.severity = 'MEDIUM' AND s.reason LIKE 'Bulk modification%';
+
 PROMPT
 PROMPT ===== PART A DETAILS: every flag raised above (severity and reason) =====
 SELECT s.sus_id, a.table_name, a.record_id, a.changed_by, s.severity, s.reason
@@ -284,6 +291,46 @@ BEGIN
   END LOOP;
 END;
 /
+
+PROMPT
+PROMPT ===== R4c - 12 rows in 1 minute must raise exactly ONE Bulk flag (not one per extra row) =====
+PROMPT -- Waiting 61 seconds so the changes of R4b leave the 1-minute window
+EXEC DBMS_SESSION.SLEEP(61)
+SELECT NVL(MAX(sus_id), 0)   AS base_sus FROM rewind.suspicious_activity;
+SELECT NVL(MAX(audit_id), 0) AS base_aud FROM rewind.audit_log;
+
+CONNECT rw_hr/"Hr#12345"@//localhost:1521/XEPDB1
+SET SERVEROUTPUT ON
+PROMPT -- R4c: HR changes the job title of 12 employees (211-222) in one statement
+UPDATE rewind.employees SET job_title = SUBSTR(job_title || ' T', 1, 50) WHERE emp_id BETWEEN 211 AND 222;
+COMMIT;
+
+CONNECT rw_admin/"Admin#12345"@//localhost:1521/XEPDB1
+SET SERVEROUTPUT ON
+SELECT 'R4c 12 rows in 1 minute -> exactly ONE Bulk flag' AS test, 1 AS expected, COUNT(*) AS actual,
+       CASE WHEN COUNT(*) = 1 THEN 'PASS' ELSE 'FAIL' END AS result
+  FROM rewind.suspicious_activity s
+ WHERE s.sus_id > &base_sus AND s.severity = 'MEDIUM' AND s.reason LIKE 'Bulk modification%';
+
+PROMPT -- Details of the R4c flag (raised at the 10th row; rows 11 and 12 raise nothing)
+SELECT s.sus_id, s.severity, s.reason
+  FROM rewind.suspicious_activity s
+ WHERE s.sus_id > &base_sus AND s.reason LIKE 'Bulk modification%';
+
+PROMPT -- Cleanup: ADMIN restores the 12 job titles
+BEGIN
+  FOR r IN (SELECT audit_id FROM rewind.audit_log
+             WHERE table_name = 'EMPLOYEES' AND record_id BETWEEN 211 AND 222
+               AND operation = 'UPDATE' AND column_name = 'JOB_TITLE'
+               AND is_restored = 'N' AND audit_id > &base_aud
+             ORDER BY audit_id DESC) LOOP
+    rewind.rewind_pkg.restore_value(r.audit_id);
+  END LOOP;
+END;
+/
+SELECT 'R4c job titles of 211-222 restored' AS test, 0 AS expected, COUNT(*) AS actual,
+       CASE WHEN COUNT(*) = 0 THEN 'PASS' ELSE 'FAIL' END AS result
+  FROM rewind.employees WHERE emp_id BETWEEN 211 AND 222 AND job_title LIKE '% T';
 
 -- =====================================================================
 -- PART C: Rule 6 (mass delete)
