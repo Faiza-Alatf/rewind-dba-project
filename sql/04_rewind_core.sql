@@ -124,12 +124,15 @@ CREATE OR REPLACE PACKAGE BODY rewind_core AS
       END IF;
 
       -- Rule 4: bulk modification (10+ rows by one user within 1 minute)
+      -- One alert per burst: flag only when the count reaches exactly 10 (the 10th row),
+      -- like Rule 6. With >= 10 every further row of the same burst raised its own flag.
+      -- Rows of every audited table (EMPLOYEES and DEPARTMENTS) are counted.
       SELECT COUNT(DISTINCT change_group) INTO v_cnt
         FROM audit_log
        WHERE changed_by = p_user
          AND operation <> 'RESTORE'
          AND changed_on > SYSTIMESTAMP - INTERVAL '1' MINUTE;
-      IF v_cnt >= 10 THEN
+      IF v_cnt = 10 THEN
         flag(p_audit_id, 'Bulk modification: ' || v_cnt || ' rows changed by ' || p_user || ' within 1 minute', 'MEDIUM');
       END IF;
     END IF;
